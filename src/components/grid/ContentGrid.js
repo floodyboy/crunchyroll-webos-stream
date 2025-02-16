@@ -3,7 +3,6 @@ import { useCallback, useState, useEffect, useMemo } from 'react'
 import { Cell, Row, Column } from '@enact/ui/Layout'
 import Heading from '@enact/moonstone/Heading'
 import Input from '@enact/moonstone/Input'
-import Spinner from '@enact/moonstone/Spinner'
 import PropTypes from 'prop-types'
 
 import { $L } from '../../hooks/language'
@@ -39,13 +38,13 @@ import css from './ContentGrid.module.less'
  * @param {Boolean} obj.noCategory Not show category
  * @param {Boolean} obj.noSearch Not show input
  */
-const ContentGrid = ({ profile, title, contentKey, contentType, engine, noCategory, noSearch, ...rest }) => {
+const ContentGrid = ({
+    profile, title, contentKey, contentType, engine = 'browse', noCategory, noSearch, ...rest }) => {
 
     const { contentList, quantity, autoScroll, delay,
         mergeContentList, changeContentList, onLeave, onFilter,
         contentListBak, optionBak,
-        loading, setLoading,
-    } = useContentList()
+    } = useContentList('content_grid')
 
     /** @type {[String, Function]} */
     const [category, setCategory] = useState(optionBak.category || 'all')
@@ -76,22 +75,22 @@ const ContentGrid = ({ profile, title, contentKey, contentType, engine, noCatego
 
     /** @type {Function} */
     const onLoad = useCallback((index) => {
-        if (index % options.quantity === 0) {
-            if (contentList[index] === undefined) {
-                mergeContentList(false, index)
-                if (engine === 'search') {
-                    api.discover.search(profile, { ...options, start: index }).then(res => {
+        if (mergeContentList(false, index)) {
+            if (engine === 'search') {
+                api.discover.search(profile, { ...options, start: index })
+                    .then(res => {
                         if (res.total) {
-                            mergeContentList(res.data[0].items, index)
+                            mergeContentList(res.data[0].items || [], index)
+                        } else {
+                            mergeContentList([], index)
                         }
                     })
-                } else {
-                    api.discover.getBrowseAll(profile, { ...options, start: index })
-                        .then(res => mergeContentList(res.data, index))
-                }
+            } else {
+                api.discover.getBrowseAll(profile, { ...options, start: index })
+                    .then(res => mergeContentList(res.data || [], index))
             }
         }
-    }, [engine, options, profile, contentList, mergeContentList])
+    }, [engine, options, profile, mergeContentList])
 
     /** @type {Function} */
     const onLeaveView = useCallback(() => {
@@ -101,8 +100,8 @@ const ContentGrid = ({ profile, title, contentKey, contentType, engine, noCatego
     useEffect(() => {
         let delayDebounceFn = undefined
         if (delay >= 0) {
+            changeContentList(null)
             delayDebounceFn = setTimeout(() => {
-                setLoading(true)
                 if (engine === 'search') {
                     if (options.query !== '') {
                         api.discover.search(profile, options).then(res => {
@@ -129,7 +128,7 @@ const ContentGrid = ({ profile, title, contentKey, contentType, engine, noCatego
             }, delay)
         }
         return () => clearTimeout(delayDebounceFn)
-    }, [profile, changeContentList, options, setLoading, contentKey, delay, engine])
+    }, [profile, changeContentList, options, contentKey, delay, engine])
 
     useEffect(() => {  // initializing
         if (contentListBak) {
@@ -169,19 +168,12 @@ const ContentGrid = ({ profile, title, contentKey, contentType, engine, noCatego
                                     setDelay={onFilter} />
                             </Cell>
                         }
-                        <Cell grow >
-                            {loading &&
-                                <Column align='center center'>
-                                    <Spinner />
-                                </Column>
-                            }
-                            {!loading &&
-                                <ContentGridItems
-                                    contentList={contentList}
-                                    load={onLoad}
-                                    onLeave={onLeaveView}
-                                    autoScroll={autoScroll} />
-                            }
+                        <Cell grow>
+                            <ContentGridItems
+                                contentList={contentList}
+                                load={onLoad}
+                                onLeave={onLeaveView}
+                                autoScroll={autoScroll} />
                         </Cell>
                     </Row>
                 </Cell>
@@ -197,10 +189,6 @@ ContentGrid.propTypes = {
     contentType: PropTypes.string,
     engine: PropTypes.string,
     noCategory: PropTypes.bool
-}
-
-ContentGrid.defaultProps = {
-    engine: 'browse'
 }
 
 export default ContentGrid

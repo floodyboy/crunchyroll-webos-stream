@@ -2,6 +2,7 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import VideoPlayer, { MediaControls } from '@enact/moonstone/VideoPlayer'
 import Button from '@enact/moonstone/Button'
+import IconButton from '@enact/moonstone/IconButton'
 import Spotlight from '@enact/spotlight'
 import { useRecoilValue, useRecoilState } from 'recoil'
 import { CrunchyrollError } from 'crunchyroll-js-api'
@@ -16,16 +17,15 @@ import ContactMe from '../login/ContactMe'
 import PopupMessage from '../Popup'
 import { currentProfileState, playContentState } from '../../recoilConfig'
 import { useGetLanguage } from '../../hooks/language'
+import * as fetchUtils from '../../hooks/customFetch'
+import { $L } from '../../hooks/language'
 import logger from '../../logger'
 import api from '../../api'
 import { getContentParam } from '../../api/utils'
-import emptyVideo from '../../../resources/empty.mp4'
+import emptyVideo from '../../../assets/empty.mp4'
 import back from '../../back'
 import { _PLAY_TEST_, _LOCALHOST_SERVER_ } from '../../const'
-import * as fetchUtils from '../../hooks/customFetch'
-import utils from '../../utils'
 import XHRLoader from '../../patch/XHRLoader'
-import { $L } from '../../hooks/language'
 
 
 /**
@@ -247,28 +247,29 @@ const findStream = async ({ profile, audios, audio, getLang, content }) => {
  * Download file per chunkSize
  * @param {String} url
  * @param {Number} chunkSize
- * @returns {Promise<Uint8Array>}
+ * @returns {Promise<{bifData: Uint8Array, requests: Array<Promise>}>}
  */
-const downloadBifFile = async (url, chunkSize = 1024 * 1024) => {
+const downloadBifFile = async (url, chunkSize = 256 * 1024) => {
     const headResponse = await fetchUtils.customFetch(url, { method: 'HEAD' })
-    let result = null
+    /** @type {Uint8Array} */
+    let bifData = null
+    /** @type {Array<Promise>} */
+    const requests = []
     if (headResponse.ok) {
         const totalSize = parseInt(headResponse.headers.get('Content-Length'))
         if (isNaN(totalSize) || !totalSize) {
             throw new Error('Bif size not working')
         }
-        result = new Uint8Array(totalSize)
+        bifData = new Uint8Array(totalSize)
         for (let start = 0; start < totalSize; start += chunkSize) {
             const end = Math.min(start + chunkSize - 1, totalSize - 1)
-            const response = await fetchUtils.customFetch(url, {
-                headers: { Range: `bytes=${start}-${end}` }
-            }, true)
-            const chunkArray = utils.base64toArray(response)
-            result.set(chunkArray, start)
+            const reqConfig = { headers: { Range: `bytes=${start}-${end}` } }
+            requests.push(fetchUtils.customFetch(url, reqConfig, true))
+            requests[requests.length - 1].then(chunkArray => bifData.set(chunkArray, start))
         }
     }
 
-    return result
+    return { bifData, requests }
 }
 
 /**
@@ -281,25 +282,37 @@ const findPreviews = async ({ bif }) => {
     const out = { chunks: [] }
 
     try {
-        /** @type {Uint8Array} */
-        const bifData = await downloadBifFile(bif)
-        const jpegStartMarker = new Uint8Array([0xFF, 0xD8]) // JPEG Init
+        if (bif) {
+            /** @type {{bifData: Uint8Array, requests: Array<Promise>}} */
+            const { bifData, requests } = await downloadBifFile(bif)
+            const jpegStartMarker = new Uint8Array([0xFF, 0xD8]) // JPEG Init
 
-        let imageStartIndex = -1
-        for (let i = 0; i < bifData.length - 1; i++) {
-            if (bifData[i] === jpegStartMarker[0] && bifData[i + 1] === jpegStartMarker[1]) {
-                if (imageStartIndex !== -1) {
-                    const chunk = bifData.slice(imageStartIndex, i)
-                    const url = window.URL.createObjectURL(new Blob([chunk], { type: 'image/jpeg' }))
-                    out.chunks.push({ start: imageStartIndex, end: i, url })
+            let imageStartIndex = -1
+            let currentChunkIndex = -1;
+            for (let i = 0; i < bifData.length - 1; i++) {
+                const chunkIndex = Math.floor((i / bifData.length) * requests.length);
+
+                if (chunkIndex !== currentChunkIndex) {
+                    currentChunkIndex = chunkIndex
+                    await requests[chunkIndex]
                 }
-                imageStartIndex = i
+                if (bifData[i] === jpegStartMarker[0] && bifData[i + 1] === jpegStartMarker[1]) {
+                    if (imageStartIndex !== -1) {
+                        const chunk = bifData.slice(imageStartIndex, i)
+                        const blob = new window.Blob([chunk], { type: 'image/jpeg' })
+                        const url = window.URL.createObjectURL(blob)
+                        out.chunks.push({ start: imageStartIndex, end: i, url })
+                    }
+                    imageStartIndex = i
+                }
             }
-        }
-        if (imageStartIndex !== -1) {
-            const chunk = bifData.slice(imageStartIndex)
-            const url = window.URL.createObjectURL(new Blob([chunk], { type: 'image/jpeg' }))
-            out.chunks.push({ start: imageStartIndex, url })
+            await requests[requests.length - 1]
+            if (imageStartIndex !== -1) {
+                const chunk = bifData.slice(imageStartIndex)
+                const blob = new window.Blob([chunk], { type: 'image/jpeg' })
+                const url = window.URL.createObjectURL(blob)
+                out.chunks.push({ start: imageStartIndex, url })
+            }
         }
     } catch (e) {
         logger.error(e)
@@ -328,16 +341,16 @@ const findPoster = ({ content }) => {
  * @param {import('crunchyroll-js-api').Types.Profile} obj.profile
  * @param {Object} obj.content
  * @param {Number} obj.step
- * @param {Array<String>} obj.concerts
+ * @param {Array<String>} obj.videos
  * @param {Function} obj.apiFunction
  * @returns {Promise<Object>}
  */
-const getNextVideoOrConcert = async ({ profile, content, step, concerts, apiFunction }) => {
+const getNextVideoOrConcert = async ({ profile, content, step, videos, apiFunction }) => {
     let out = null
-    const index = concerts.findIndex(val => val === content.id)
+    const index = videos.findIndex(val => val === content.id)
     const nextIndex = index + step
-    if (index >= 0 && nextIndex >= 0 && nextIndex < concerts.length) {
-        const { data: newConcerts } = await apiFunction(profile, [concerts[nextIndex]])
+    if (index >= 0 && nextIndex >= 0 && nextIndex < videos.length) {
+        const { data: newConcerts } = await apiFunction(profile, [videos[nextIndex]])
         if (newConcerts.length > 0) {
             out = newConcerts[0]
         }
@@ -368,24 +381,34 @@ const findNextEp = async ({ profile, content, step }) => {
             out = { total: 1, data: [movies.data[nextIndex]] }
         }
     } else if (['musicConcert', 'musicVideo'].includes(content.type)) {
-        const { data: artists } = await api.music.getArtists(profile, [content.artist.id])
-        if (artists.length > 0) {
-            const params = { profile, content, step }
-            if ('musicConcert' === content.type) {
-                out = await getNextVideoOrConcert({
-                    ...params,
-                    concerts: artists[0].concerts,
-                    apiFunction: api.music.getConcerts
-                })
-            } else if ('musicVideo' === content.type) {
-                out = await getNextVideoOrConcert({
-                    ...params,
-                    concerts: artists[0].videos,
-                    apiFunction: api.music.getVideos
-                })
+        /** @type {{videos: Array<Object>}} */
+        const { videos } = content
+        if (videos) {
+            const videoIndex = videos.findIndex(item => item.id === content.id)
+            const nextIndex = videoIndex + step
+            if (0 <= nextIndex && nextIndex < videos.length) {
+                out = { total: 1, data: [{ ...videos[nextIndex] }] }
             }
-            if (out) {
-                out = { total: 1, data: [out] }
+        } else {
+            const { data: artists } = await api.music.getArtists(profile, [content.artist.id])
+            if (artists.length > 0) {
+                const params = { profile, content, step }
+                if ('musicConcert' === content.type) {
+                    out = await getNextVideoOrConcert({
+                        ...params,
+                        videos: artists[0].concerts,
+                        apiFunction: api.music.getConcerts
+                    })
+                } else if ('musicVideo' === content.type) {
+                    out = await getNextVideoOrConcert({
+                        ...params,
+                        videos: artists[0].videos,
+                        apiFunction: api.music.getVideos
+                    })
+                }
+                if (out) {
+                    out = { total: 1, data: [out] }
+                }
             }
         }
     }
@@ -471,7 +494,9 @@ const createDashPlayer = async (audio, stream, content, subtitle) => {
     dashPlayer.updateSettings({
         streaming: {
             buffer: {
-                bufferTimeAtTopQualityLongForm: 120,
+                stableBufferTime: 15,
+                bufferTimeAtTopQuality: 150,
+                bufferTimeAtTopQualityLongForm: 300,
             }
         }
     })
@@ -706,6 +731,14 @@ const Player = ({ ...rest }) => {
     const onEndVideo = useCallback((ev) => setEndEvent(ev), [setEndEvent])
 
     /** @type {Function} */
+    const markAsWatched = useCallback(() => {
+        api.discover.markAsWatched(profile, content.id)
+            .then(() => console.log('watched'))
+            .catch(console.error)
+        onNextEp(new Event('fake'))
+    }, [profile, content, onNextEp])
+
+    /** @type {Function} */
     const onPlayPause = useCallback(() => {
         if (playerCompRef.current) {
             const { paused } = playerCompRef.current.getMediaState()
@@ -769,8 +802,10 @@ const Player = ({ ...rest }) => {
             } else {
                 setMessage(err.message || err.httpStatusText)
             }
+        } else if (err) {
+            setMessage(err.message || `${err}`)
         } else {
-            setMessage(err)
+            setMessage($L('An error occurred'))
         }
     }, [setMessage])
 
@@ -811,13 +846,27 @@ const Player = ({ ...rest }) => {
     }, [profile, stream, setSubtitle, setPreviews, setSkipEvents])
 
     useEffect(() => {  // attach subs
+        let interval = null
         if (stream.urls && subtitle && stream.id === content.id) {
-            createDashPlayer(audio, stream, content, subtitle).then(player => {
-                setLoading(false)
-                setIsPaused(false)
-                playerRef.current = player
-                playerRef.current.play()
-            }).catch(setMessage)
+            interval = setInterval(() => {
+                if (playerCompRef.current) {
+                    clearInterval(interval)
+                    createDashPlayer(audio, stream, content, subtitle).then(player => {
+                        playerRef.current = player
+                        playerRef.current.play()
+                        setLoading(false)
+                        setIsPaused(false)
+                        /* how to log, add function and off events in clean up function
+                        player.updateSettings({ debug: { logLevel: dashjs.Debug.LOG_LEVEL_DEBUG } })
+                        player.on(dashjs.MediaPlayer.events.BUFFER_EMPTY, onBufferEmpty)
+                        player.on(dashjs.MediaPlayer.events.BUFFER_LOADED, onBufferLoaded)
+                        player.on(dashjs.MediaPlayer.events.FRAGMENT_LOADING_STARTED, onBufferLogging)
+                        player.on(dashjs.MediaPlayer.events.FRAGMENT_LOADING_PROGRESS, onBufferLogging)
+                        player.on(dashjs.MediaPlayer.events.FRAGMENT_LOADING_COMPLETED, onBufferLogging)
+                        */
+                    }).catch(handleCrunchyError)
+                }
+            }, 100)
         }
         return () => {
             setLoading(true)
@@ -826,8 +875,9 @@ const Player = ({ ...rest }) => {
                 playerRef.current.destroy()
                 playerRef.current = null
             }
+            clearInterval(interval)
         }
-    }, [profile, content, stream, audio, subtitle, setLoading])
+    }, [profile, content, stream, audio, subtitle, setLoading, handleCrunchyError])
 
     useEffect(() => {  // set stream session
         if (stream === emptyStream) {
@@ -990,9 +1040,16 @@ const Player = ({ ...rest }) => {
                 <MediaControls id="media-controls">
                     <leftComponents>
                         <ContentInfo content={content} />
-                        {['episode'].includes(content.type) &&
+                        {['episode'].includes(content.type) && (<>
+                            <IconButton
+                                backgroundOpacity="lightTranslucent"
+                                onClick={markAsWatched}
+                                tooltipText={$L('Mark as watched')}>
+                                checkselection
+                            </IconButton>
                             <Rating profile={profile} content={content} />
-                        }
+
+                        </>)}
                     </leftComponents>
                     <rightComponents>
                         {stream.subtitles.length > 1 &&

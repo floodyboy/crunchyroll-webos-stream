@@ -14,7 +14,7 @@ import VirtualListNested from '../../patch/VirtualListNested'
 import api from '../../api'
 import { LOAD_MOCK_DATA } from '../../const'
 import logger from '../../logger'
-import kidImg from '../../../resources/img/child.jpg'
+import kidImg from '../../../assets/img/child.jpg'
 
 
 /**
@@ -318,15 +318,24 @@ export const getFakeFeedItem = () => {
     }
 }
 
-const HomeFeed = ({ profile, homeFeed, setHomeFeed, type, ...rest2 }) => {
+/**
+ * @param {Object} obj
+ * @param {import('crunchyroll-js-api').Types.Profile} obj.profile current profile
+ * @param {Array<Object>} obj.homeFeed
+ * @param {Function} obj.setHomeFeed
+ * @param {'home'|'music'} obj.type
+ */
+const HomeFeed = ({ profile, homeFeed, setHomeFeed, type = 'home', ...rest2 }) => {
     /** @type {{current: Function}} */
     const scrollToRef = useRef(null)
+    /** @type {{current: Number}} */
+    const rowIndexRef = useRef(null)
+    /** @type {{rowIndex: Number, columnIndex: Number}} */
+    const homePosition = useRecoilValue(homePositionState)
     /** @type {Function} */
     const getScrollTo = useCallback((scrollTo) => { scrollToRef.current = scrollTo }, [])
     /** @type {[Object, Function]} */
     const [selectedContent, setSelectedContent] = useState(null)
-    /** @type {{rowIndex: Number, columnIndex: Number}} */
-    const homePosition = useRecoilValue(homePositionState)
     /** @type {Number} */
     const itemHeigth = ri.scale(270)
     /** @type {Object} */
@@ -369,14 +378,18 @@ const HomeFeed = ({ profile, homeFeed, setHomeFeed, type, ...rest2 }) => {
     }, [homeFeed, profile, type, setSelectedContent, setHomeFeed, fakeItem])
 
     useEffect(() => {
+        rowIndexRef.current = homePosition.rowIndex
+    }, [homePosition.rowIndex])
+
+    useEffect(() => {
         const interval = setInterval(() => {
-            if (scrollToRef.current) {
+            if (scrollToRef.current && rowIndexRef.current !== null) {
                 clearInterval(interval)
-                scrollToRef.current({ index: homePosition.rowIndex, animate: false, focus: false })
+                scrollToRef.current({ index: rowIndexRef.current, animate: false, focus: false })
             }
         }, 100)
         return () => clearInterval(interval)
-    }, [homePosition.rowIndex])
+    }, [])
 
     return (
         <Column style={{ paddingLeft: '0.5rem' }} {...rest2}>
@@ -407,11 +420,7 @@ HomeFeed.propTypes = {
     profile: PropTypes.object.isRequired,
     homeFeed: PropTypes.arrayOf(PropTypes.object).isRequired,
     setHomeFeed: PropTypes.func.isRequired,
-    type: PropTypes.oneOf(['home', 'music']).isRequired,
-}
-
-HomeFeed.defaultProps = {
-    type: 'home'
+    type: PropTypes.oneOf(['home', 'music']),
 }
 
 export default HomeFeed

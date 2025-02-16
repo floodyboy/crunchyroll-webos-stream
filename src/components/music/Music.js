@@ -3,7 +3,6 @@ import { useCallback, useState, useEffect, useMemo } from 'react'
 import { Column, Cell, Row } from '@enact/ui/Layout'
 import Heading from '@enact/moonstone/Heading'
 import Input from '@enact/moonstone/Input'
-import Spinner from '@enact/moonstone/Spinner'
 import PropTypes from 'prop-types'
 
 import { $L } from '../../hooks/language'
@@ -23,13 +22,13 @@ import useContentList from '../../hooks/contentList'
  * @param {Array<Object>} obj.musicFeed Music feed array
  * @param {Function} obj.setMusicFeed setState for musicFeed
  */
-const MusicBrowse = ({ profile, title, contentKey, contentType, musicFeed, setMusicFeed, ...rest }) => {
+const MusicBrowse = ({
+    profile, title, contentKey, contentType = 'music', musicFeed, setMusicFeed, ...rest }) => {
 
     const { contentList, quantity, autoScroll, delay,
         mergeContentList, changeContentList, onLeave, onFilter,
         contentListBak, optionBak,
-        loading, setLoading,
-    } = useContentList()
+    } = useContentList('music_browse')
 
     /** @type {[String, Function]} */
     const [query, setQuery] = useState(optionBak.query || '')
@@ -56,17 +55,15 @@ const MusicBrowse = ({ profile, title, contentKey, contentType, musicFeed, setMu
 
     /** @type {Function} */
     const onLoad = useCallback((index) => {
-        if (index % options.quantity === 0) {
-            if (contentList[index] === undefined) {
-                mergeContentList(false, index)
-                api.discover.search(profile, { ...options, start: index }).then(res => {
+        if (mergeContentList(false, index)) {
+            api.discover.search(profile, { ...options, start: index })
+                .then(res => {
                     if (res.total) {
                         mergeContentList(res.data[0].items, index)
                     }
                 })
-            }
         }
-    }, [options, profile, contentList, mergeContentList])
+    }, [options, profile, mergeContentList])
 
     /** @type {Function} */
     const onLeaveView = useCallback(() => {
@@ -76,8 +73,8 @@ const MusicBrowse = ({ profile, title, contentKey, contentType, musicFeed, setMu
     useEffect(() => {
         let delayDebounceFn = undefined
         if (delay >= 0) {
+            changeContentList(null)
             delayDebounceFn = setTimeout(() => {
-                setLoading(true)
                 if (options.query !== '') {
                     api.discover.search(profile, options).then(res => {
                         if (res.total) {
@@ -95,7 +92,7 @@ const MusicBrowse = ({ profile, title, contentKey, contentType, musicFeed, setMu
             }, delay)
         }
         return () => clearTimeout(delayDebounceFn)
-    }, [profile, changeContentList, options, setLoading, contentKey, delay])
+    }, [profile, changeContentList, options, contentKey, delay])
 
     useEffect(() => {  // initializing
         if (contentListBak) {
@@ -123,19 +120,14 @@ const MusicBrowse = ({ profile, title, contentKey, contentType, musicFeed, setMu
                 </Row>
             </Cell>
             <Cell grow style={{ paddingTop: '0.5rem', paddingBottom: '0.5rem' }}>
-                {loading &&
-                    <Column align='center center'>
-                        <Spinner />
-                    </Column>
-                }
-                {!loading && query === '' &&
+                {query === '' &&
                     <HomeFeed
                         profile={profile}
                         homeFeed={musicFeed}
                         setHomeFeed={setMusicFeed}
                         type='music' />
                 }
-                {!loading && query !== '' &&
+                {query !== '' &&
                     <ContentGridItems
                         contentList={contentList}
                         load={onLoad}
@@ -154,10 +146,6 @@ MusicBrowse.propTypes = {
     musicFeed: PropTypes.arrayOf(PropTypes.object).isRequired,
     setMusicFeed: PropTypes.func.isRequired,
     contentType: PropTypes.string,
-}
-
-MusicBrowse.defaultProps = {
-    contentType: 'music'
 }
 
 export default MusicBrowse

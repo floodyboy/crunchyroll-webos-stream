@@ -1,16 +1,16 @@
 
-import { useCallback, useState, useEffect, useMemo } from 'react'
+import { useCallback, useState, useEffect, useMemo, useRef } from 'react'
 import { Cell, Row, Column } from '@enact/ui/Layout'
-import Spinner from '@enact/moonstone/Spinner'
 import Button from '@enact/moonstone/Button'
 import LabeledItem from '@enact/moonstone/LabeledItem'
 import Dropdown from '@enact/moonstone/Dropdown'
 import PropTypes from 'prop-types'
 
-import { $L } from '../../hooks/language'
 import ContentGridItems from '../grid/ContentGridItems'
-import api from '../../api'
 import css from '../grid/ContentGrid.module.less'
+import { dropdownKeydown } from '../SelectLanguage'
+import { $L } from '../../hooks/language'
+import api from '../../api'
 import useContentList from '../../hooks/contentList'
 
 
@@ -34,8 +34,7 @@ const Simulcast = ({ profile, title, ...rest }) => {
     const { contentList, quantity, autoScroll, delay,
         mergeContentList, changeContentList, onLeave, onFilter,
         contentListBak, optionBak,
-        loading, setLoading,
-    } = useContentList()
+    } = useContentList('simulcast')
 
     /** @type {[import('./SeasonButtons').Season, Function]} */
     const [season, setSeason] = useState(optionBak.season || undefined)
@@ -70,6 +69,9 @@ const Simulcast = ({ profile, title, ...rest }) => {
         }
     }, [season, sort, quantity])
 
+    /** @type {{current: Boolean}} */
+    const autoScrollRef = useRef(true)
+
     /** @type {Function} */
     const onSelectOrder = useCallback(({ selected }) => {
         setOrder(order[selected].key)
@@ -90,46 +92,45 @@ const Simulcast = ({ profile, title, ...rest }) => {
 
     /** @type {Function} */
     const onLoad = useCallback((index) => {
-        if (contentList[index] === undefined) {
-            mergeContentList(false, index)
-            api.discover.getBrowseAll(profile, { ...options, start: index }).then(res =>
-                mergeContentList(res.data, index)
-            )
-
+        if (mergeContentList(false, index)) {
+            api.discover.getBrowseAll(profile, { ...options, start: index })
+                .then(res => mergeContentList(res.data, index))
         }
-    }, [profile, contentList, mergeContentList, options])
+    }, [profile, mergeContentList, options])
 
     /** @type {Function} */
     const onLeaveView = useCallback(() => {
-        onLeave({ season, seasons, sort })
+        onLeave({ season, seasons, sort }, false)
     }, [onLeave, season, seasons, sort])
 
     useEffect(() => {
         if (delay >= 0) {
-            setLoading(true)
+            changeContentList(null)
             if (season && season.id) {
                 api.discover.getBrowseAll(profile, options).then(res => {
-                    changeContentList([...res.data, ...new Array(res.total - res.data.length)])
+                    changeContentList([...res.data, ...new Array(res.total - res.data.length)], autoScrollRef.current)
+                    autoScrollRef.current = true
                 })
             }
         }
-    }, [profile, changeContentList, options, setLoading, season, delay])
+    }, [profile, changeContentList, options, season, delay])
 
     useEffect(() => {
-        if (delay >= 0) {
+        if (delay >= 0 && !season) {
             api.discover.getSeasonList(profile).then(({ data: seasonsList }) => {
                 seasonsList.forEach((item, index) => { item.index = index })
                 setSeasons(seasonsList)
                 setSeason(seasonsList[0])
             })
         }
-    }, [profile, setSeason, delay])
+    }, [profile, setSeason, delay, season])
 
-    useEffect(() => {  // iinitializing
+    useEffect(() => {  // initializing
         if (contentListBak) {
             changeContentList(contentListBak)
         } else {
             onFilter({ delay: 0, scroll: true })
+            autoScrollRef.current = false
         }
     }, [profile, contentListBak, changeContentList, onFilter])
 
@@ -142,7 +143,9 @@ const Simulcast = ({ profile, title, ...rest }) => {
                             <Dropdown title={$L('Order')}
                                 selected={order.findIndex(i => i.key === sort)}
                                 width='small'
-                                onSelect={onSelectOrder}>
+                                onSelect={onSelectOrder}
+                                onKeyDown={dropdownKeydown}
+                                showCloseButton>
                                 {orderStr}
                             </Dropdown>
                         </Cell>
@@ -167,19 +170,12 @@ const Simulcast = ({ profile, title, ...rest }) => {
                 </Cell>
                 <Cell grow>
                     <Row className={css.scrollerContainer}>
-                        <Cell grow >
-                            {loading &&
-                                <Column align='center center'>
-                                    <Spinner />
-                                </Column>
-                            }
-                            {!loading &&
-                                <ContentGridItems
-                                    contentList={contentList}
-                                    load={onLoad}
-                                    onLeave={onLeaveView}
-                                    autoScroll={autoScroll} />
-                            }
+                        <Cell grow>
+                            <ContentGridItems
+                                contentList={contentList}
+                                load={onLoad}
+                                onLeave={onLeaveView}
+                                autoScroll={autoScroll} />
                         </Cell>
                     </Row>
                 </Cell>

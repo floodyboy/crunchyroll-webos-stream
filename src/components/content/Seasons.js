@@ -1,10 +1,14 @@
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Row, Cell, Column } from '@enact/ui/Layout'
+import Heading from '@enact/moonstone/Heading'
+import LabeledIconButton from '@enact/moonstone/LabeledIconButton'
 import Spinner from '@enact/moonstone/Spinner'
 
 import PropTypes from 'prop-types'
 
+import { $L } from '../../hooks/language'
+import { useBackVideoIndex } from '../../hooks/backVideoIndex'
 import { ContentHeader } from '../home/ContentBanner'
 import SeasonsList from './SeasonsList'
 import EpisodesList from './EpisodesList'
@@ -29,9 +33,10 @@ export async function calculatePlayheadProgress({ profile, episodesData }) {
     for (const ep of episodesData) {
         if (playheads[ep.id]) {
             const duration = ep.duration_ms / 1000
+            const playhead = playheads[ep.id].fully_watched ? duration : playheads[ep.id].playhead
             ep.playhead = {
                 ...playheads[ep.id],
-                progress: playheads[ep.id].playhead / duration * 100
+                progress: playhead / duration * 100
             }
         } else {
             ep.playhead = {
@@ -51,64 +56,76 @@ export async function calculatePlayheadProgress({ profile, episodesData }) {
  * @param {Function} obj.setContentToPlay
  * @param {Boolean} obj.isPremium account is premium?
  * @param {Object} obj.contentDetailBak
- * @param {Function} obj.onSelectSeason
  */
-const Seasons = ({ profile, series, setContentToPlay, isPremium, contentDetailBak, onSelectSeason, ...rest }) => {
+const Seasons = ({ profile, series, setContentToPlay, isPremium, contentDetailBak, ...rest }) => {
     /** @type {[Array<Object>, Function]} */
-    const [seasons, setSeasons] = useState(JSON.parse(JSON.stringify(contentDetailBak.seasons || [])))
+    const [seasons, setSeasons] = useState(contentDetailBak.seasons
+        ? JSON.parse(JSON.stringify(contentDetailBak.seasons))  // to avoid error setting episodes, line 132
+        : null
+    )
     /** @type {[Number, Function]} */
-    const [seasonIndex, setSeasonIndex] = useState(contentDetailBak.seasonIndex || 0)
+    const [seasonIndex, setSeasonIndex] = useState(contentDetailBak.seasonIndex)
     /** @type {[Array<Object>, Function]} */
-    const [episodes, setEpisodes] = useState(contentDetailBak.episodes || [])
+    const [episodes, setEpisodes] = useState(null)
+    /** @type {[Number, Function]} */
+    const [episodeIndex, setEpisodeIndex] = useState(null)
     /** @type {[Boolean, Function]}  */
-    const [loading, setLoading] = useState(true)
-
-    /** @type {Function} */
-    const selectSeason = useCallback(ev => {
-        const target = ev.currentTarget || ev.target
-        setSeasonIndex(parseInt(target.dataset.index))
-    }, [setSeasonIndex])
+    const [loading, setLoading] = useState(false)
+    /** @type {{current: Number}} */
+    const seasonIndexRef = useRef(null)
 
     /** @type {Function} */
     const playEpisode = useCallback(ev => {
         const target = ev.currentTarget || ev.target
-        const episodeIndex = parseInt(target.dataset.index)
-        setContentToPlay(episodes[episodeIndex], {
-            seasons,
-            seasonIndex,
-            episodes,
-            episodeIndex,
-
-        })
+        const index = parseInt(target.dataset.index)
+        if (episodes && episodes.length) {
+            seasons.forEach(e => { e.episodes = [] })  // force reload
+            setContentToPlay(episodes[index], { seasons, seasonIndex })
+        }
     }, [seasons, seasonIndex, episodes, setContentToPlay])
 
-    useEffect(() => {
-        if (contentDetailBak.seasonIndex != null &&
-            contentDetailBak.seasonIndex !== seasonIndex) {
-            // reset bak values
-            onSelectSeason({
-                episodes: undefined,
-                episodeIndex: undefined,
-            })
+    /** @type {Function} */
+    const markAsWatched = useCallback(ev => {
+        if (ev.type === 'click' || (ev.type === 'keyup' && ev.key === 'Enter')) {
+            if (episodes && episodes.filter(ep => !(ep?.playhead?.fully_watched)).length > 0) {
+                setLoading(true)
+                for (const ep of episodes) {
+                    if (!ep.playhead) {
+                        ep.playhead = {}
+                    }
+                    ep.playhead.fully_watched = true
+                    ep.playhead.progress = 100
+                }
+                setEpisodes([...episodes])
+                api.discover.markAsWatched(profile, seasons[seasonIndex].id)
+                    .then(() => console.log('watched'))
+                    .catch(console.error)
+                    .finally(() => setLoading(false))
+            }
         }
-    }, [profile, seasonIndex, contentDetailBak.seasonIndex, onSelectSeason])
+    }, [profile, seasons, seasonIndex, episodes, setLoading])
+
+    useBackVideoIndex(episodes, setEpisodeIndex)
 
     useEffect(() => {
         if (contentDetailBak.seasons == null) {
-            setLoading(true)
             api.cms.getSeasons(profile, { serieId: series.id }).then(({ data }) => {
                 data.forEach(e => { e.episodes = [] })
                 setSeasons(data)
-            }).then(() => setLoading(false))
-        } else {
-            setLoading(false)
+                setSeasonIndex(0)
+            })
         }
     }, [profile, series, contentDetailBak.seasons])
 
     useEffect(() => {
-        const loadData = () => {
+        seasonIndexRef.current = seasonIndex
+        setEpisodes(null)
+        setEpisodeIndex(null)
+        if (seasonIndex != null && seasons != null) {
             if (seasons[seasonIndex].episodes.length) {
-                setEpisodes(seasons[seasonIndex].episodes)
+                if (seasonIndex === seasonIndexRef.current) {
+                    setEpisodes(seasons[seasonIndex].episodes)
+                }
             } else {
                 api.cms.getEpisodes(profile, { seasonId: seasons[seasonIndex].id })
                     .then(({ data }) => Promise.all([
@@ -119,54 +136,65 @@ const Seasons = ({ profile, series, setContentToPlay, isPremium, contentDetailBa
                             })
                             seasons[seasonIndex].episodes = data
                         }),
-                        calculatePlayheadProgress({ profile, episodesData: data }),
-                    ]).then(() => setEpisodes(data)))
+                        Promise.resolve().then(() => {
+                            if (data.length) {
+                                return calculatePlayheadProgress({ profile, episodesData: data })
+                            }
+                        }),
+                    ]).then(() => seasonIndex === seasonIndexRef.current && setEpisodes(data)))
             }
         }
-        let timeout = null
-        if (seasons.length && contentDetailBak.episodes == null) {
-            setEpisodes([])
-            timeout = setTimeout(loadData, 1000)
-        }
-        return () => clearTimeout(timeout)
-    }, [profile, seasons, seasonIndex, isPremium, contentDetailBak.episodes])
+    }, [profile, seasons, seasonIndex, isPremium])
 
     return (
         <Row align='start space-between' {...rest}>
-            {loading &&
-                <Column align='center center' style={{ width: '100%' }}>
-                    <Spinner />
-                </Column>
-            }
-            {!loading &&
-                <Row style={{ width: '100%' }}>
-                    <Cell size="49%">
-                        <Column>
+            <Row style={{ width: '100%' }}>
+                <Cell size='49%'>
+                    <Column>
+                        <Cell shrink>
+                            <ContentHeader content={series} />
+                        </Cell>
+                        <Cell grow>
+                            <SeasonsList
+                                seasons={seasons}
+                                selectSeason={setSeasonIndex}
+                                seasonIndex={seasonIndex} />
+                        </Cell>
+                    </Column>
+                </Cell>
+                <Cell size='49%'>
+                    <Column>
+                        {series.type === 'series' && seasons != null && seasons.length > 0 && (
                             <Cell shrink>
-                                <ContentHeader content={series} />
+                                <Heading size="small">
+                                    {seasons[seasonIndex].season_tags.join(', ')}
+                                </Heading>
+                                {loading && <Spinner />}
+                                {!loading &&
+                                    <LabeledIconButton
+                                        icon='checkselection'
+                                        labelPosition='after'
+                                        onClick={markAsWatched}
+                                        onKeyUp={markAsWatched}
+                                        style={{ maxWidth: '13rem' }}
+                                        disabled={!(episodes &&
+                                            episodes.filter(ep => !(ep?.playhead?.fully_watched)).length > 0)
+                                        }>
+                                        {$L('Mark as watched')}
+                                    </LabeledIconButton>
+                                }
                             </Cell>
-                            <Cell>
-                                <SeasonsList
-                                    seasons={seasons}
-                                    selectSeason={selectSeason}
-                                    seasonIndex={seasonIndex} />
-                            </Cell>
-                        </Column>
-                    </Cell>
-                    <Cell size="49%">
-                        {episodes.length ?
+                        )}
+                        <Cell grow>
                             <EpisodesList
+                                seasonIndex={seasonIndex}
                                 episodes={episodes}
                                 selectEpisode={playEpisode}
-                                episodeIndex={contentDetailBak.episodeIndex} />
-                            :
-                            <Column align='center center' style={{ height: '100%', width: '100%' }}>
-                                <Spinner />
-                            </Column>
-                        }
-                    </Cell>
-                </Row>
-            }
+                                episodeIndex={episodeIndex} />
+                        </Cell>
+                    </Column>
+                </Cell>
+            </Row>
         </Row>
     )
 }
@@ -177,7 +205,6 @@ Seasons.propTypes = {
     setContentToPlay: PropTypes.func.isRequired,
     isPremium: PropTypes.bool.isRequired,
     contentDetailBak: PropTypes.object.isRequired,
-    onSelectSeason: PropTypes.func.isRequired,
 }
 
 export default Seasons
